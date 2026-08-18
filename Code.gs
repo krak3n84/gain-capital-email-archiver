@@ -1,97 +1,124 @@
+const CONFIG = {
+  labelName: 'GainCapitalReports',
+  archiveFolderName: 'GainCapital_Archive',
+  filePrefix: 'GainCapital_Daily_'
+};
+
 /**
- * Saves Gain Capital trading emails as PDFs to Google Drive
- * Customized for daily forex trading confirmations
+ * Processes all labeled confirmation emails and archives each one as a PDF.
+ * The Gmail label is removed only after a PDF is created successfully.
  */
 function saveGainCapitalEmailsAsPDF() {
-  // Get emails with the "GainCapitalReports" label
-  let label = GmailApp.getUserLabelByName("GainCapitalReports");
-  if (!label) {
-    console.log("Label 'GainCapitalReports' not found. Please create it first.");
-    return;
-  }
-  
-  let threads = label.getThreads();
-  console.log(`Found ${threads.length} email threads to process`);
+  const label = getRequiredLabel_();
+  if (!label) return;
 
-  // Get or create the "GainCapital_Archive" folder in Google Drive
-  let folders = DriveApp.getFoldersByName("GainCapital_Archive");
-  let folder;
-  if (!folders.hasNext()) {
-    folder = DriveApp.createFolder("GainCapital_Archive");
-    console.log("Created new folder: GainCapital_Archive");
-  } else {
-    folder = folders.next();
-  }
+  const threads = label.getThreads();
+  const folder = getOrCreateArchiveFolder_();
 
-  // Process each email thread
-  let processedCount = 0;
-  for (let i = 0; i < threads.length; i++) {
-    let messages = threads[i].getMessages();
-    let firstMessage = messages[0];
-    
-    // Get email details
-    let subject = threads[i].getFirstMessageSubject();
-    let date = firstMessage.getDate();
-    let sender = firstMessage.getFrom();
-    
-    // Create filename with date and account info
-    let dateStr = Utilities.formatDate(date, "GMT", "yyyy-MM-dd");
-    let pdfName = `GainCapital_Daily_${dateStr}`;
-    
-    // Check if PDF already exists to avoid duplicates
-    let existingFiles = folder.getFilesByName(pdfName + ".pdf");
-    if (existingFiles.hasNext()) {
-      console.log(`File already exists: ${pdfName}.pdf - Skipping`);
-      continue;
-    }
-    
-    // Get email content (use HTML for better formatting)
-    let messageHTML = firstMessage.getBody();
-    
-    // Add header information to PDF
-    let headerHTML = `
-      <div style="font-family: Arial, sans-serif; margin-bottom: 20px; border-bottom: 2px solid #ccc; padding-bottom: 10px;">
-        <h3>Gain Capital Daily Confirmation</h3>
-        <p><strong>Date:</strong> ${dateStr}</p>
-        <p><strong>From:</strong> ${sender}</p>
-        <p><strong>Subject:</strong> ${subject}</p>
-      </div>
-    `;
-    
-    let fullHTML = headerHTML + messageHTML;
-    
-    try {
-      // Generate PDF blob
-      let blob = Utilities.newBlob(fullHTML, MimeType.HTML, pdfName).getAs(MimeType.PDF);
-      
-      // Create the PDF file in the folder
-      let file = folder.createFile(blob);
-      console.log(`Created PDF: ${pdfName}.pdf`);
-      
-      // Remove the label from processed email
-      threads[i].removeLabel(label);
-      processedCount++;
-      
-    } catch (error) {
-      console.log(`Error processing email ${pdfName}: ${error.toString()}`);
-    }
-  }
-  
-  console.log(`Successfully processed ${processedCount} emails`);
+  console.log(`Found ${threads.length} email thread(s) to process.`);
+  const processedCount = processThreads_(threads, label, folder);
+  console.log(`Successfully processed ${processedCount} email thread(s).`);
 }
 
 /**
- * Test function to process just one email (for testing)
+ * Processes at most one labeled email thread for a controlled test run.
  */
 function testSingleEmail() {
-  let label = GmailApp.getUserLabelByName("GainCapitalReports");
-  let threads = label.getThreads(0, 1); // Get just 1 email
-  
-  if (threads.length > 0) {
-    console.log("Testing with one email...");
-    // Process the single email using same logic
-    saveGainCapitalEmailsAsPDF();
-  } else {
-    console.log("No emails found with GainCapitalReports label");
+  const label = getRequiredLabel_();
+  if (!label) return;
+
+  const threads = label.getThreads(0, 1);
+  if (threads.length === 0) {
+    console.log(`No email threads found with label '${CONFIG.labelName}'.`);
+    return;
   }
+
+  const folder = getOrCreateArchiveFolder_();
+  console.log('Testing with one email thread.');
+  const processedCount = processThreads_(threads, label, folder);
+  console.log(`Test processed ${processedCount} email thread(s).`);
+}
+
+function getRequiredLabel_() {
+  const label = GmailApp.getUserLabelByName(CONFIG.labelName);
+  if (!label) {
+    console.log(`Label '${CONFIG.labelName}' was not found. Create it before running the archiver.`);
+    return null;
+  }
+  return label;
+}
+
+function getOrCreateArchiveFolder_() {
+  const folders = DriveApp.getFoldersByName(CONFIG.archiveFolderName);
+  if (folders.hasNext()) {
+    return folders.next();
+  }
+
+  const folder = DriveApp.createFolder(CONFIG.archiveFolderName);
+  console.log(`Created archive folder: ${CONFIG.archiveFolderName}`);
+  return folder;
+}
+
+function processThreads_(threads, label, folder) {
+  let processedCount = 0;
+
+  threads.forEach(function(thread) {
+    const messages = thread.getMessages();
+    if (messages.length === 0) {
+      console.log('Skipping an empty email thread.');
+      return;
+    }
+
+    const firstMessage = messages[0];
+    const date = firstMessage.getDate();
+    const dateStr = Utilities.formatDate(
+      date,
+      Session.getScriptTimeZone(),
+      'yyyy-MM-dd'
+    );
+    const pdfName = `${CONFIG.filePrefix}${dateStr}.pdf`;
+
+    if (folder.getFilesByName(pdfName).hasNext()) {
+      console.log(`File already exists: ${pdfName}. Skipping duplicate creation.`);
+      return;
+    }
+
+    try {
+      const sender = escapeHtml_(firstMessage.getFrom());
+      const subject = escapeHtml_(thread.getFirstMessageSubject());
+      const messageHTML = firstMessage.getBody();
+
+      const headerHTML = `
+        <div style="font-family: Arial, sans-serif; margin-bottom: 20px; border-bottom: 2px solid #ccc; padding-bottom: 10px;">
+          <h3>Gain Capital Daily Confirmation</h3>
+          <p><strong>Date:</strong> ${dateStr}</p>
+          <p><strong>From:</strong> ${sender}</p>
+          <p><strong>Subject:</strong> ${subject}</p>
+        </div>
+      `;
+
+      const blob = Utilities
+        .newBlob(headerHTML + messageHTML, MimeType.HTML, pdfName)
+        .getAs(MimeType.PDF)
+        .setName(pdfName);
+
+      folder.createFile(blob);
+      thread.removeLabel(label);
+      processedCount++;
+      console.log(`Created PDF: ${pdfName}`);
+    } catch (error) {
+      console.log(`Error processing ${pdfName}: ${error.toString()}`);
+    }
+  });
+
+  return processedCount;
+}
+
+function escapeHtml_(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
